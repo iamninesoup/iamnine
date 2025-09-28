@@ -1,0 +1,250 @@
+// Teensy 4.1 내장 DAC를 사용한 사인파 생성
+#include <Audio.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
+
+// 전역 변수 추가
+bool streamToPc = false;
+bool playChordLoop = false;
+float currentFreq = 440.0;
+int chordIndex = 0;
+unsigned long lastChordChange = 0;
+
+// 음계 주파수 정의 (4옥타브)
+float noteFreqs[] = {
+  261.63,  // C4 (도)
+  293.66,  // D4 (레)  
+  329.63,  // E4 (미)
+  349.23,  // F4 (파)
+  392.00,  // G4 (솔)
+  440.00,  // A4 (라)
+  493.88,  // B4 (시)
+  523.25   // C5 (높은도)
+};
+
+// 도미솔 코드
+float chordNotes[] = {261.63, 329.63, 392.00}; // C, E, G
+
+// 오디오 객체 생성
+AudioSynthWaveformSine   sine1;        // 사인파 생성기
+AudioSynthWaveformSine   sine2;        // 두 번째 사인파 (옵션)
+AudioOutputAnalog        dac1;         // 내장 DAC 출력 (A14 핀)
+AudioConnection          patchCord1(sine1, 0, dac1, 0);  // 사인파 → DAC 연결
+
+// 또는 PWM 출력 사용 (더 높은 품질)
+AudioOutputPWM           pwm1;         // PWM 출력
+AudioConnection          patchCord2(sine1, 0, pwm1, 0);  // PWM 좌채널
+AudioConnection          patchCord3(sine1, 0, pwm1, 1);  // PWM 우채널
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  // 오디오 메모리 할당
+  AudioMemory(10);
+  
+  // 출력 핀 설정
+  Serial.println("Teensy 4.1 내장 DAC/PWM 사인파 테스트 시작");
+  Serial.println("");
+  Serial.println("출력 방법 선택:");
+  Serial.println("1. DAC 출력 - A14 핀 (0-1.2V, 고품질)");
+  Serial.println("2. PWM 출력 - 핀 4,5 (3.3V, 필터링 필요)");
+  Serial.println("");
+  Serial.println("현재: 두 방법 모두 활성화됨");
+  Serial.println("");
+  
+  // 사인파 설정
+  sine1.amplitude(0.5);    // 볼륨 50% (0.0 ~ 1.0)
+  sine1.frequency(440);    // 440Hz (A4 음표)
+  
+  Serial.println("440Hz 사인파 출력 중...");
+  Serial.println("");
+  Serial.println("시리얼 모니터 명령어:");
+  Serial.println("f[주파수] - 예: f1000 (1000Hz)");
+  Serial.println("a[진폭] - 예: a0.8 (80% 볼륨)");
+  Serial.println("s - 정지");
+  Serial.println("r - 재시작");
+  Serial.println("sweep - 주파수 스위프 테스트");
+  Serial.println("dual - 듀얼 톤 테스트");
+  Serial.println("");
+}
+
+void loop() {
+  // 시리얼 명령어 처리
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    
+    if (command.startsWith("f")) {
+      // 주파수 변경
+      float freq = command.substring(1).toFloat();
+      if (freq >= 10 && freq <= 22000) {
+        sine1.frequency(freq);
+        Serial.println("주파수: " + String(freq) + "Hz");
+      } else {
+        Serial.println("주파수 범위: 10-22000Hz");
+      }
+    }
+    else if (command.startsWith("a")) {
+      // 진폭 변경
+      float amp = command.substring(1).toFloat();
+      if (amp >= 0.0 && amp <= 1.0) {
+        sine1.amplitude(amp);
+        Serial.println("진폭: " + String(amp * 100) + "%");
+      } else {
+        Serial.println("진폭 범위: 0.0-1.0");
+      }
+    }
+    else if (command == "s") {
+      // 정지
+      sine1.amplitude(0);
+      Serial.println("출력 정지");
+    }
+    else if (command == "r") {
+      // 재시작
+      sine1.amplitude(0.5);
+      Serial.println("출력 재시작 (440Hz, 50%)");
+    }
+    else if (command == "sweep") {
+      // 주파수 스위프 테스트
+      Serial.println("주파수 스위프 테스트 시작 (100Hz → 2000Hz, 5초)");
+      frequencySweep(100, 2000, 5000);
+      Serial.println("스위프 완료");
+    }
+    else if (command == "dual") {
+      // 듀얼 톤 테스트
+      Serial.println("듀얼 톤 테스트 - 구현하려면 코드 수정 필요");
+    }
+    else if (command == "stream") {
+      // PC로 오디오 데이터 스트리밍
+      streamToPc = !streamToPc;
+      Serial.println(streamToPc ? "PC 스트리밍 시작" : "PC 스트리밍 정지");
+    }
+    else if (command == "chord") {
+      // 도미솔 코드 반복 재생
+      playChordLoop = !playChordLoop;
+      Serial.println(playChordLoop ? "도미솔 반복 시작" : "도미솔 반복 정지");
+      chordIndex = 0;
+      lastChordChange = millis();
+    }
+    else if (command == "scale") {
+      // 도레미파솔라시도 스케일 재생
+      playScale();
+    }
+    else if (command == "notes") {
+      // 음계 주파수 표시
+      printNotes();
+    }
+    else {
+      Serial.println("알 수 없는 명령어: " + command);
+      Serial.println("사용 가능한 명령어: f[주파수], a[진폭], s, r, sweep");
+    }
+  }
+  
+  // 도미솔 코드 반복 재생
+  if (playChordLoop && millis() - lastChordChange > 800) { // 0.8초마다 변경
+    sine1.frequency(chordNotes[chordIndex]);
+    Serial.print("♪ ");
+    Serial.print(chordIndex == 0 ? "도" : chordIndex == 1 ? "미" : "솔");
+    Serial.print(" (");
+    Serial.print(chordNotes[chordIndex]);
+    Serial.println("Hz)");
+    
+    chordIndex = (chordIndex + 1) % 3; // 0,1,2 순환
+    lastChordChange = millis();
+  }
+  
+  // 성능 모니터링
+  static unsigned long lastPrint = 0;
+  if (millis() - lastPrint > 5000) {  // 5초마다
+    Serial.print("CPU 사용률: ");
+    Serial.print(AudioProcessorUsage());
+    Serial.print("%, 메모리 사용률: ");
+    Serial.print(AudioMemoryUsage());
+    Serial.println(" 블록");
+    lastPrint = millis();
+  }
+  
+  delay(10);
+}
+
+// 주파수 스위프 테스트 함수
+void frequencySweep(float startFreq, float endFreq, unsigned long durationMs) {
+  Serial.println("주파수 스위프: " + String(startFreq) + "Hz → " + String(endFreq) + "Hz");
+  
+  unsigned long startTime = millis();
+  while (millis() - startTime < durationMs) {
+    float progress = (float)(millis() - startTime) / durationMs;
+    float currentFreq = startFreq + (endFreq - startFreq) * progress;
+    sine1.frequency(currentFreq);
+    delay(10);
+  }
+  
+  // 원래 주파수로 복귀
+  sine1.frequency(440);
+}
+
+// 도레미파솔라시도 스케일 재생 함수
+void playScale() {
+  Serial.println("🎵 도레미파솔라시도 재생 중...");
+  
+  for (int i = 0; i < 8; i++) {
+    sine1.frequency(noteFreqs[i]);
+    
+    // 음계 이름 출력
+    String noteNames[] = {"도", "레", "미", "파", "솔", "라", "시", "높은도"};
+    Serial.print("♪ ");
+    Serial.print(noteNames[i]);
+    Serial.print(" (");
+    Serial.print(noteFreqs[i]);
+    Serial.println("Hz)");
+    
+    delay(600); // 0.6초씩 재생
+  }
+  
+  // 원래 주파수로 복귀
+  sine1.frequency(440);
+  Serial.println("스케일 재생 완료 - 440Hz로 복귀");
+}
+
+// 음계 주파수 정보 출력
+void printNotes() {
+  Serial.println("=== 음계 주파수 정보 ===");
+  String noteNames[] = {"도(C4)", "레(D4)", "미(E4)", "파(F4)", 
+                       "솔(G4)", "라(A4)", "시(B4)", "높은도(C5)"};
+  
+  for (int i = 0; i < 8; i++) {
+    Serial.print(noteNames[i]);
+    Serial.print(": ");
+    Serial.print(noteFreqs[i]);
+    Serial.println("Hz");
+  }
+  Serial.println("도미솔 코드: 261.63Hz, 329.63Hz, 392.00Hz");
+  Serial.println("=======================");
+}
+
+// 간단한 멜로디 재생 함수 (기존 함수 개선)
+void playMelody() {
+  float notes[] = {261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25}; // C4-C5
+  int noteCount = sizeof(notes) / sizeof(notes[0]);
+  
+  Serial.println("도레미파솔라시도 재생");
+  for (int i = 0; i < noteCount; i++) {
+    sine1.frequency(notes[i]);
+    delay(500);  // 0.5초씩 재생
+  }
+  sine1.frequency(440);  // 440Hz로 복귀
+}
+
+// 파형 모니터링 함수 (디버그용)
+void printWaveInfo() {
+  Serial.println("=== 파형 정보 ===");
+  Serial.print("현재 주파수: ");
+  // sine1.frequency() 값을 직접 읽을 수는 없으므로 변수로 저장해야 함
+  Serial.println("Hz");
+  Serial.print("현재 진폭: ");
+  Serial.println("%");
+  Serial.println("================");
+}
