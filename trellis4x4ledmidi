@@ -1,0 +1,117 @@
+#include <Wire.h>
+#include "Adafruit_Trellis.h"
+#include <MIDIUSB.h>  // USB MIDI
+
+Adafruit_Trellis matrix = Adafruit_Trellis();
+
+unsigned long lastPress[16];          // 버튼별 마지막 눌림 시간
+bool buttonState[16];              // 버튼별 현재 상태 (true = 눌림, false = 안눌림)
+const unsigned long debounce = 50; // 디바운스 시간 단축 (ms)
+
+// 버튼별 MIDI 노트 할당
+const int noteMap[16] = {
+  60, 61, 62, 63,
+  64, 65, 66, 67,
+  68, 69, 70, 71,
+  72, 73, 74, 75
+};
+
+void sendNoteOn(byte pitch) {
+  midiEventPacket_t noteOn = {0x09, 0x90, pitch, 127};
+  MidiUSB.sendMIDI(noteOn);
+}
+
+void sendNoteOff(byte pitch) {
+  midiEventPacket_t noteOff = {0x08, 0x80, pitch, 0};
+  MidiUSB.sendMIDI(noteOff);
+}
+
+void setup() {
+  Serial.begin(9600);
+  
+  // 전원 안정화 대기
+  delay(2000);
+  
+  // I2C 초기화
+  Wire.begin();
+  delay(100);
+  
+  // Trellis 초기화 (begin은 void 타입이므로 단순 호출)
+  Serial.println("Initializing Trellis...");
+  matrix.begin(0x70);  // Trellis I2C 주소
+  delay(500);  // 초기화 안정화 시간
+  Serial.println("Trellis initialized");
+  
+  // LED 점진적 테스트 (전력 분산)
+  Serial.println("LED test starting...");
+  for(int i = 0; i < 16; i++) {
+    matrix.setLED(i);
+    matrix.writeDisplay();
+    delay(50);  // 점진적으로 켜기
+  }
+  delay(500);
+  
+  // 모든 LED 끄기
+  for(int i = 0; i < 16; i++) {
+    matrix.clrLED(i);
+  }
+  matrix.writeDisplay();
+  
+  // 버튼 상태 배열 초기화
+  for(int i = 0; i < 16; i++) {
+    buttonState[i] = false;
+    lastPress[i] = 0;
+  }
+  
+  Serial.println("Trellis + MIDI ready");
+}
+
+void loop() {
+  matrix.readSwitches();
+
+  bool midiEvent = false;  // MIDI flush 호출 여부 플래그
+
+  for (uint8_t i = 0; i < 16; i++) {
+    // 버튼 눌림 (눌려있지 않았다가 눌렸을 때만)
+    if (matrix.justPressed(i) && !buttonState[i]) {
+      if (millis() - lastPress[i] > debounce) {
+        Serial.print("Button ");
+        Serial.print(i);
+        Serial.print(" PRESSED, MIDI Note: ");
+        Serial.println(noteMap[i]);
+
+        matrix.setLED(i);          // LED 켜기
+        matrix.writeDisplay();
+
+        sendNoteOn(noteMap[i]);    // MIDI Note On
+        midiEvent = true;
+
+        buttonState[i] = true;     // 버튼 상태를 눌림으로 설정
+        lastPress[i] = millis();
+      }
+    }
+
+    // 버튼 릴리즈 (눌려있다가 놓였을 때만)
+    if (matrix.justReleased(i) && buttonState[i]) {
+      Serial.print("Button ");
+      Serial.print(i);
+      Serial.print(" RELEASED, MIDI Note: ");
+      Serial.println(noteMap[i]);
+
+      matrix.clrLED(i);            // LED 끄기
+      matrix.writeDisplay();
+
+      sendNoteOff(noteMap[i]);     // MIDI Note Off
+      midiEvent = true;
+      
+      buttonState[i] = false;      // 버튼 상태를 안눌림으로 설정
+    }
+  }
+
+  // 이벤트 있을 때만 flush
+  if (midiEvent) {
+    MidiUSB.flush();
+  }
+
+  delay(20);  // 최소 지연으로 느려짐 방지
+}
