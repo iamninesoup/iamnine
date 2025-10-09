@@ -1,0 +1,20 @@
+// LED 핀 후보
+const int pins[] = {LED_BUILTIN, 13, 17};
+const int numPins = sizeof(pins) / sizeof(pins[0]);
+
+void setup() {
+  // 모든 후보 핀 OUTPUT으로 설정
+  for (int i = 0; i < numPins; i++) {
+    pinMode(pins[i], OUTPUT);
+  }
+}
+
+void loop() {
+  // 각 핀을 순서대로 깜빡이기
+  for (int i = 0; i < numPins; i++) {
+    digitalWrite(pins[i], HIGH);
+    delay(300);
+    digitalWrite(pins[i], LOW);
+    delay(300);
+  }
+}
